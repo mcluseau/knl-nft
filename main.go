@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"sort"
@@ -20,6 +21,8 @@ import (
 )
 
 var (
+	debug = flag.Bool("debug", false, "debug")
+
 	appCtx, appCancel = context.WithCancel(context.Background())
 
 	containerRuntimeEndpoint = envFlag(
@@ -92,7 +95,13 @@ func run(runtimeService cri.RuntimeServiceClient) (ok bool) {
 		return ci.Id < cj.Id
 	})
 
+	seenHostPorts := map[int]bool{}
+
 	for _, ctr := range containers {
+		if ctr.State != cri.ContainerState_CONTAINER_RUNNING {
+			continue
+		}
+
 		portsStr := ctr.Annotations["io.kubernetes.container.ports"]
 		if portsStr == "" {
 			continue
@@ -121,11 +130,20 @@ func run(runtimeService cri.RuntimeServiceClient) (ok bool) {
 			continue
 		}
 
+		log = log.With().Str("pod-ns", pod.Status.Metadata.Namespace).Str("pod-name", pod.Status.Metadata.Name).Logger()
+
 		for _, port := range ports {
 			hostPort := port.HostPort
 			if hostPort == 0 {
-				hostPort = port.ContainerPort
+				continue
 			}
+
+			if seenHostPorts[hostPort] {
+				log.Warn().Int("host-port", hostPort).Msg("duplicate host port ignored")
+				continue
+			}
+
+			seenHostPorts[hostPort] = true
 
 			mapping := "      " + strconv.Itoa(hostPort) + " : " + ip + " . " + strconv.Itoa(port.ContainerPort) + ",\n"
 			switch port.Protocol {
@@ -171,7 +189,9 @@ table container-hostports {
 		return true
 	}
 
-	// fmt.Println(buf)
+	if *debug {
+		fmt.Println(buf)
+	}
 
 	cmd := exec.Command("nft", "-f", "-")
 	cmd.Stdin = buf
